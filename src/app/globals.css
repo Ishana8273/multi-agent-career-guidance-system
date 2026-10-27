@@ -1,0 +1,173 @@
+@import "tailwindcss";
+
+@theme {
+  --color-hull: #0b0d0c;
+  --color-rack: #141816;
+  --color-recess: #1e2422;
+  --color-hair: #2a322e;
+  --color-alum: #8a9a92;
+  --color-alumdim: #5c6a63;
+  --color-phos: #5ce68a;
+  --color-phosdim: #0f3d22;
+  --color-phosmid: #2dbe62;
+  --color-phosbright: #a8f5c6;
+  --color-amber: #ffa538;
+  --color-amberdim: #4a2f0d;
+  --color-cream: #f4f1e8;
+  --color-ink: #1a1d19;
+  --font-display: "Space Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, monospace;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--color-hull);
+  color: var(--color-alum);
+  font-family: var(--font-display);
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+/* engraved rack panel label — colour is always supplied by the element */
+.lbl {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+}
+
+/* brushed housing texture */
+.housing {
+  background-image: linear-gradient(
+      180deg,
+      rgba(11, 13, 12, 0.94),
+      rgba(11, 13, 12, 0.97)
+    ),
+    url("/images/panel.jpg");
+  background-size: cover;
+  background-position: center;
+}
+
+.recess {
+  background: linear-gradient(180deg, #171c1a 0%, #121614 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(0, 0, 0, 0.6),
+    inset 0 -1px 0 rgba(138, 154, 146, 0.06);
+}
+
+.raised {
+  box-shadow:
+    inset 0 1px 0 rgba(138, 154, 146, 0.08),
+    0 1px 0 rgba(0, 0, 0, 0.7);
+}
+
+.glow {
+  text-shadow: 0 0 12px rgba(92, 230, 138, 0.45);
+}
+
+.glow-amber {
+  text-shadow: 0 0 12px rgba(255, 165, 56, 0.5);
+}
+
+/* phosphor scan sweep on newly latched elements */
+@keyframes sweep {
+  0% {
+    transform: translateY(-100%);
+    opacity: 0.9;
+  }
+  100% {
+    transform: translateY(220%);
+    opacity: 0;
+  }
+}
+.sweep::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    rgba(92, 230, 138, 0.22),
+    transparent
+  );
+  animation: sweep 620ms ease-out 1;
+}
+
+@keyframes blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.caret {
+  animation: blink 900ms steps(1) infinite;
+}
+
+@keyframes pulseLed {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.led-live {
+  animation: pulseLed 780ms ease-in-out infinite;
+}
+
+/* instrument scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2a322e transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2a322e;
+  border-radius: 0;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #3c4741;
+}
+
+::selection {
+  background: rgba(92, 230, 138, 0.3);
+  color: #a8f5c6;
+}
+
+:focus-visible {
+  outline: 1px solid var(--color-phos);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::after,
+  *::before {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
