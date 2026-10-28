@@ -1,9 +1,17 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type FormEvent,
+} from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   Briefcase,
+  BookOpen,
   ChevronRight,
   ExternalLink,
   FileText,
@@ -26,6 +34,7 @@ import type {
   Plan,
   TraceStep,
 } from "@/lib/roles";
+import { CAREER_FOCUSES } from "@/lib/roles";
 
 /* ---------------------------------- mark ---------------------------------- */
 
@@ -87,14 +96,7 @@ const DEFAULT_INPUT: CandidateInput = {
     "Led the ledger migration off the legacy monolith; own on-call for money movement; want scope across systems rather than features.",
 };
 
-const FOCUS = [
-  "job switch",
-  "internal promotion",
-  "domain pivot",
-  "leadership track",
-  "interview rehabilitation",
-  "return after gap",
-];
+const FOCUS = CAREER_FOCUSES;
 
 interface HistItem {
   id: string;
@@ -113,6 +115,20 @@ interface FeedState {
   facts: MemoryFact[];
 }
 
+interface GuidanceAnswer {
+  answer: string;
+  mode: "model-grounded" | "source-excerpts" | "no-evidence";
+  priorRunsSearched: number;
+  sources: {
+    id: string;
+    ref: string;
+    source: string;
+    excerpt: string;
+    score: number;
+    savedAt?: string;
+  }[];
+}
+
 /* ================================ console ================================= */
 
 export default function Console({ history }: { history: HistItem[] }) {
@@ -124,6 +140,9 @@ export default function Console({ history }: { history: HistItem[] }) {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [runInput, setRunInput] = useState<CandidateInput | null>(null);
   const [engine, setEngine] = useState<EngineInfo | null>(null);
+  const [storage, setStorage] = useState<
+    "checking" | "local-file" | "postgres" | "unavailable"
+  >("checking");
   const [feed, setFeed] = useState<FeedState | null>(null);
   const [jobs, setJobs] = useState<LiveJob[]>([]);
   const [jobQuery, setJobQuery] = useState("");
@@ -131,6 +150,13 @@ export default function Console({ history }: { history: HistItem[] }) {
   const [filter, setFilter] = useState<AgentId | "orchestrator" | "all">("all");
   const [showPlan, setShowPlan] = useState(false);
   const [histOpen, setHistOpen] = useState(false);
+  const [briefOpen, setBriefOpen] = useState(false);
+  const [askOpen, setAskOpen] = useState(false);
+  const [askQuestion, setAskQuestion] = useState("");
+  const [askLoading, setAskLoading] = useState(false);
+  const [askError, setAskError] = useState("");
+  const [guidanceAnswer, setGuidanceAnswer] =
+    useState<GuidanceAnswer | null>(null);
   const [hist, setHist] = useState<HistItem[]>(history);
   const [tab, setTab] = useState<"agents" | "council" | "memory">("council");
   const [err, setErr] = useState("");
@@ -143,6 +169,32 @@ export default function Console({ history }: { history: HistItem[] }) {
       1000,
     );
     return () => clearInterval(t);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/health")
+      .then(async (response) => ({
+        ok: response.ok,
+        status: (await response.json()) as {
+          ok?: boolean;
+          storage?: string;
+        },
+      }))
+      .then(({ ok, status }) => {
+        if (!active) return;
+        if (!ok || status.ok === false) {
+          setStorage("unavailable");
+        } else {
+          setStorage(status.storage === "postgres" ? "postgres" : "local-file");
+        }
+      })
+      .catch(() => {
+        if (active) setStorage("unavailable");
+      });
+    return () => {
+      active = false;
+    };
   }, []);
 
   /* --------------------- live job feed (independent GET) ------------------- */
@@ -173,9 +225,12 @@ export default function Console({ history }: { history: HistItem[] }) {
   }, []);
 
   useEffect(() => {
-    loadJobs(`${DEFAULT_INPUT.targetRole} ${DEFAULT_INPUT.stack}`);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const timer = window.setTimeout(
+      () => loadJobs(`${DEFAULT_INPUT.targetRole} ${DEFAULT_INPUT.stack}`),
+      0,
+    );
+    return () => window.clearTimeout(timer);
+  }, [loadJobs]);
 
   /* --------------------------- auto-print the plan ------------------------ */
   useEffect(() => {
@@ -201,6 +256,7 @@ export default function Console({ history }: { history: HistItem[] }) {
     setPhase("running");
     setTab("council");
 
+    let terminalEvent: "plan" | "error" | null = null;
     const handle = (event: string, d: Record<string, unknown>) => {
       if (event === "engine") {
         setEngine(d as unknown as EngineInfo);
@@ -229,6 +285,9 @@ export default function Console({ history }: { history: HistItem[] }) {
           chunks: Chunk[];
           plan: Plan;
         };
+        if (!payload.input || !Array.isArray(payload.trace) || !payload.plan) {
+          throw new Error("run stream returned an invalid plan");
+        }
         setTrace(payload.trace);
         setChunks(payload.chunks);
         setPlan(payload.plan);
@@ -236,6 +295,7 @@ export default function Console({ history }: { history: HistItem[] }) {
         setInput(payload.input);
         setFacts(payload.plan.facts);
         setPhase("done");
+        terminalEvent = "plan";
         loadJobs(`${payload.input.targetRole} ${payload.input.stack}`);
         fetch("/api/runs")
           .then((r) => r.json())
@@ -244,6 +304,7 @@ export default function Console({ history }: { history: HistItem[] }) {
       } else if (event === "error") {
         setErr(String((d as { message?: string }).message ?? "council failed"));
         setPhase("idle");
+        terminalEvent = "error";
       }
     };
 
@@ -253,7 +314,17 @@ export default function Console({ history }: { history: HistItem[] }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(input),
       });
-      if (!res.ok || !res.body) throw new Error("run failed");
+      if (!res.ok || !res.body) {
+        const errorBody = await res.json().catch(() => null);
+        const message =
+          errorBody &&
+          typeof errorBody === "object" &&
+          "error" in errorBody &&
+          typeof errorBody.error === "string"
+            ? errorBody.error
+            : `run request failed (${res.status})`;
+        throw new Error(message);
+      }
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -275,15 +346,24 @@ export default function Console({ history }: { history: HistItem[] }) {
           if (!data) continue;
           try {
             handle(event, JSON.parse(data));
-          } catch {
-            /* malformed frame — ignore */
+          } catch (error) {
+            if (error instanceof SyntaxError) {
+              throw new Error("run stream returned malformed event data");
+            }
+            throw error;
           }
         }
       }
-      setPhase((p) => (p === "running" ? "done" : p));
-    } catch {
-      setErr("council unreachable — the database or the feeds did not answer.");
-      setPhase("idle");
+      if (terminalEvent === null) {
+        throw new Error("run stream ended before a result was saved");
+      }
+    } catch (error) {
+      if (terminalEvent !== "error") {
+        setErr(
+          error instanceof Error ? error.message : "career run failed",
+        );
+        setPhase("idle");
+      }
     }
   }
 
@@ -315,6 +395,48 @@ export default function Console({ history }: { history: HistItem[] }) {
       setTab("council");
     } catch {
       setErr("could not load that run.");
+    }
+  }
+
+  async function askCareerQuestion(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (askLoading) return;
+    setAskLoading(true);
+    setAskError("");
+    setGuidanceAnswer(null);
+    try {
+      const response = await fetch("/api/ask", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          question: askQuestion,
+          candidate: input,
+        }),
+      });
+      const result = (await response.json()) as
+        | GuidanceAnswer
+        | { error?: string };
+      if (!response.ok) {
+        throw new Error(
+          "error" in result && result.error
+            ? result.error
+            : `question request failed (${response.status})`,
+        );
+      }
+      if (
+        !("answer" in result) ||
+        typeof result.answer !== "string" ||
+        !Array.isArray(result.sources)
+      ) {
+        throw new Error("question service returned an invalid response");
+      }
+      setGuidanceAnswer(result);
+    } catch (error) {
+      setAskError(
+        error instanceof Error ? error.message : "could not answer question",
+      );
+    } finally {
+      setAskLoading(false);
     }
   }
 
@@ -378,21 +500,33 @@ export default function Console({ history }: { history: HistItem[] }) {
                 ORCHESTRA
               </span>
               <span className="lbl hidden text-alumdim sm:inline">
-                multi-agent career council
+                multi-agent career guidance · college project
               </span>
             </div>
             <div className="lbl mt-1.5 text-alumdim">
-              blackboard · rag · live feeds · sse stream
+              shared blackboard · career retrieval · optional live feeds
             </div>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setAskOpen(true)}
+            className="flex items-center gap-2 border border-phos/50 bg-phosdim/30 px-3 py-2 font-mono text-[10px] tracking-[0.18em] text-phos uppercase transition-colors hover:bg-phosdim/60"
+          >
+            <MessagesSquare size={12} /> Ask guidance
+          </button>
+          <button
+            onClick={() => setBriefOpen(true)}
+            className="flex items-center gap-2 border border-hair bg-recess px-3 py-2 font-mono text-[10px] tracking-[0.18em] text-alum uppercase transition-colors hover:border-phos hover:text-phos"
+          >
+            <BookOpen size={12} /> Project brief
+          </button>
           <span
             title={
               engineKind === "llm"
                 ? `${engine?.provider} ${engine?.model}`
-                : "no LLM key configured — set OPENAI_API_KEY, ANTHROPIC_API_KEY, GROQ_API_KEY or OPENROUTER_API_KEY to enable live model reasoning"
+                : "no LLM key configured — optionally set an OpenAI, Groq, OpenRouter, Anthropic, or Gemini provider key for external narrative generation"
             }
             className="hidden items-center gap-2 border px-2.5 py-1.5 md:flex"
             style={{
@@ -419,7 +553,7 @@ export default function Console({ history }: { history: HistItem[] }) {
 
           <div className="mr-1 hidden items-center gap-3 md:flex">
             {[
-              ["PG", "#5CE68A"],
+              ["STORE", "#5CE68A"],
               ["VEC", feed?.live ? "#5CE68A" : "#FFA538"],
               ["LLM", phase === "running" ? "#FFA538" : "#5CE68A"],
             ].map(([l, c]) => (
@@ -580,27 +714,31 @@ export default function Console({ history }: { history: HistItem[] }) {
                 className="relative border-b border-hair"
                 style={{
                   backgroundImage:
-                    "linear-gradient(90deg, rgba(11,13,12,.95) 12%, rgba(11,13,12,.55) 70%, rgba(11,13,12,.85)), url('/images/console.jpg')",
-                  backgroundSize: "cover",
-                  backgroundPosition: "center right",
+                    "radial-gradient(ellipse at 78% 12%, rgba(92,230,138,.12), transparent 45%), linear-gradient(110deg, rgba(11,13,12,.98), rgba(20,30,24,.88))",
                 }}
               >
                 <div className="flex min-h-[210px] flex-col justify-end p-6">
-                  <div className="lbl text-phos">candidate intake</div>
+                  <div className="lbl text-phos">career profile intake</div>
                   <h1
                     className="mt-3 max-w-[16ch] text-[clamp(1.9rem,3.6vw,3rem)] leading-[0.95] tracking-[-0.035em] text-alum"
                     style={{ fontWeight: 600 }}
                   >
-                    Four agents.
+                    One career goal.
                     <br />
-                    One blackboard.
-                    <span className="text-phos glow"> Live feeds.</span>
+                    Four specialist agents.
+                    <span className="text-phos glow"> One plan.</span>
                   </h1>
+                  <p className="mt-4 max-w-[64ch] text-[13px] leading-[1.65] text-alum">
+                    ORCHESTRA is a college project prototype for career
+                    decision support. It combines resume, skills, job-market,
+                    and interview perspectives into one evidence-linked
+                    development plan.
+                  </p>
                   <div className="mt-4 flex flex-wrap gap-x-7 gap-y-2 font-mono text-[10px] tracking-[0.14em] text-alumdim uppercase">
                     <span>4 specialised agents</span>
-                    <span>3 public job apis</span>
-                    <span>episodic memory</span>
-                    <span>server-sent trace</span>
+                    <span>bundled career corpus</span>
+                    <span>optional live job feeds</span>
+                    <span>streamed, traceable workflow</span>
                   </div>
                 </div>
               </div>
@@ -686,9 +824,17 @@ export default function Console({ history }: { history: HistItem[] }) {
                   <Play size={14} /> convene the council
                 </button>
                 <p className="mt-2.5 font-mono text-[10px] leading-[1.6] text-alumdim">
-                  POST /api/runs → server-sent event stream. the route fetches
-                  live job feeds, re-reads prior blackboard memory, runs the
-                  four agents, then commits the plan to postgres.
+                  POST /api/runs → server-sent event stream. the route searches
+                  the career corpus, optionally fetches live job feeds, re-reads
+                  prior run memory, and runs the four specialist agents. the
+                  plan is saved to{" "}
+                  {storage === "postgres"
+                    ? "postgres"
+                    : storage === "local-file"
+                      ? "local data/runs.json"
+                      : storage === "checking"
+                        ? "storage being checked"
+                        : "unavailable storage"}.
                 </p>
               </div>
             </div>
@@ -945,7 +1091,7 @@ export default function Console({ history }: { history: HistItem[] }) {
                     <br />
                     <br />
                     agents write facts here during the run; each carries its
-                    source collection and cosine score so the plan stays
+                    source collection and cosine similarity so the plan stays
                     auditable.
                   </p>
                 </div>
@@ -1014,14 +1160,14 @@ export default function Console({ history }: { history: HistItem[] }) {
 
             {cited.size > 0 && (
               <div className="lbl mt-4 border-t border-hair pt-3 text-alumdim">
-                {cited.size} chunks cited this run
+                {cited.size} relevant corpus passages retrieved this run
               </div>
             )}
           </div>
 
           <div className="shrink-0 border-t border-hair px-4 py-2.5">
             <div className="lbl text-alumdim">
-              vector store · cosine · 4 collections
+              bundled corpus · bag-of-terms cosine · 4 collections
             </div>
           </div>
         </section>
@@ -1036,7 +1182,20 @@ export default function Console({ history }: { history: HistItem[] }) {
           ["facts", String(facts.length)],
           ["feed", feed?.live ? "LIVE" : feed ? "DOWN" : "—"],
           ["model", engineKind === "llm" ? "LLM" : "LOCAL"],
-          ["persist", plan ? "POSTGRES ✓" : phase === "running" ? "PENDING" : "—"],
+          [
+            "persist",
+            plan
+              ? storage === "postgres"
+                ? "POSTGRES ✓"
+                : storage === "local-file"
+                  ? "LOCAL FILE ✓"
+                  : "STORAGE DOWN"
+              : phase === "running"
+                ? "PENDING"
+                : storage === "unavailable"
+                  ? "STORAGE DOWN"
+                  : "—",
+          ],
           ["utc", clock],
         ].map(([k, v]) => (
           <span key={k} className="flex items-center gap-2">
@@ -1045,9 +1204,16 @@ export default function Console({ history }: { history: HistItem[] }) {
               className="num text-[10px]"
               style={{
                 color:
-                  v === "DONE" || v === "POSTGRES ✓" || v === "LIVE" || v === "LLM"
+                  v === "DONE" ||
+                  v === "POSTGRES ✓" ||
+                  v === "LOCAL FILE ✓" ||
+                  v === "LIVE" ||
+                  v === "LLM"
                     ? "#5CE68A"
-                    : v === "RUNNING" || v === "DOWN" || v === "LOCAL"
+                    : v === "RUNNING" ||
+                        v === "DOWN" ||
+                        v === "LOCAL" ||
+                        v === "STORAGE DOWN"
                       ? "#FFA538"
                       : "#8A9A92",
               }}
@@ -1074,6 +1240,284 @@ export default function Console({ history }: { history: HistItem[] }) {
       </AnimatePresence>
 
       <AnimatePresence>
+        {briefOpen && (
+          <>
+            <motion.button
+              type="button"
+              aria-label="Close project brief"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setBriefOpen(false)}
+              className="fixed inset-0 z-40 cursor-default bg-hull/85"
+            />
+            <motion.section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="project-brief-title"
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 18 }}
+              className="fixed inset-x-4 top-[8vh] z-50 mx-auto max-h-[84vh] max-w-3xl overflow-y-auto border border-hair bg-rack p-5 shadow-2xl sm:inset-x-auto sm:w-[min(760px,92vw)] sm:p-8"
+            >
+              <div className="flex items-start justify-between gap-5 border-b border-hair pb-4">
+                <div>
+                  <div className="lbl text-phos">college project overview</div>
+                  <h2
+                    id="project-brief-title"
+                    className="mt-2 text-2xl tracking-tight text-cream"
+                    style={{ fontWeight: 600 }}
+                  >
+                    ORCHESTRA
+                  </h2>
+                  <p className="mt-1 font-mono text-[11px] text-alumdim">
+                    Multi-Agent Career Guidance System
+                  </p>
+                </div>
+                <button
+                  onClick={() => setBriefOpen(false)}
+                  aria-label="Close project brief"
+                  className="text-alumdim transition-colors hover:text-phos"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="mt-5 space-y-5 text-[13px] leading-[1.7] text-alum">
+                <section>
+                  <h3 className="lbl text-phos">Abstract</h3>
+                  <p className="mt-2">
+                    ORCHESTRA is an educational decision-support prototype
+                    that coordinates resume, skills, job, and interview
+                    specialists to turn a candidate profile and target role
+                    into one evidence-linked career development plan. The
+                    agents share retrieved passages and intermediate findings
+                    through a blackboard, stream their workflow to the
+                    interface, and save plans so users can revisit them.
+                  </p>
+                </section>
+                <section>
+                  <h3 className="lbl text-phos">Problem and aim</h3>
+                  <p className="mt-2">
+                    Career preparation involves disconnected information about
+                    experience, competencies, job requirements, and interview
+                    expectations. This project demonstrates a coordinated
+                    workflow for bringing those perspectives together and
+                    translating them into practical next steps.
+                  </p>
+                </section>
+                <section>
+                  <h3 className="lbl text-phos">Method and architecture</h3>
+                  <p className="mt-2">
+                    Candidate intake → bundled-corpus retrieval and optional
+                    job-feed retrieval → sequential specialist-agent analysis
+                    → shared blackboard → streamed career plan → saved run
+                    history. Ask guidance searches the career corpus, current
+                    profile notes, and matching saved runs, then displays
+                    supporting sources.
+                    Retrieval uses bag-of-terms cosine scoring; external model
+                    generation is optional and evidence-grounded.
+                  </p>
+                </section>
+                <section>
+                  <h3 className="lbl text-phos">Project outputs</h3>
+                  <p className="mt-2">
+                    The report includes editable resume templates with
+                    placeholders, estimated target-role skill gaps,
+                    illustrative role archetypes alongside any live postings,
+                    an interview preparation ladder, a quarterly roadmap, and
+                    cited retrieved passages. Ask guidance adds free-form,
+                    career-focused questions against this evidence. The
+                    workflow trace makes each agent step observable.
+                  </p>
+                </section>
+                <section className="border border-amber/40 bg-amberdim/30 p-3">
+                  <h3 className="lbl text-amber">Scope and responsible use</h3>
+                  <p className="mt-2 text-alum">
+                    This is a college project prototype, not a validated
+                    employment assessment. Readiness and match scores are
+                    rule-based heuristics; skill gaps are estimates from
+                    declared inputs. Replace every resume placeholder only
+                    with facts you can verify. Optional AI providers may
+                    process submitted profile text; avoid entering sensitive
+                    information.
+                  </p>
+                </section>
+              </div>
+              <div className="mt-6 flex justify-end border-t border-hair pt-4">
+                <button
+                  onClick={() => setBriefOpen(false)}
+                  className="border border-phos/50 px-4 py-2 font-mono text-[10px] tracking-[0.16em] text-phos uppercase hover:bg-phosdim"
+                >
+                  Return to console
+                </button>
+              </div>
+            </motion.section>
+          </>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {askOpen && (
+          <>
+            <motion.button
+              type="button"
+              aria-label="Close career guidance"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setAskOpen(false)}
+              className="fixed inset-0 z-40 cursor-default bg-hull/85"
+            />
+            <motion.section
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="career-question-title"
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 18 }}
+              className="fixed inset-x-4 top-[5vh] z-50 mx-auto max-h-[90vh] max-w-3xl overflow-y-auto border border-phos/40 bg-rack p-5 shadow-2xl sm:inset-x-auto sm:w-[min(820px,94vw)] sm:p-8"
+            >
+              <div className="flex items-start justify-between gap-5 border-b border-hair pb-4">
+                <div>
+                  <div className="lbl text-phos">evidence-grounded · career questions</div>
+                  <h2
+                    id="career-question-title"
+                    className="mt-2 text-xl tracking-tight text-cream sm:text-2xl"
+                    style={{ fontWeight: 600 }}
+                  >
+                    Ask ORCHESTRA
+                  </h2>
+                  <p className="mt-2 max-w-[68ch] text-[12px] leading-[1.6] text-alumdim">
+                    Ask about resumes, role skills, interview preparation, or
+                    career planning. Search uses the entered target role and
+                    stack, the built-in career corpus, and saved runs with the
+                    same candidate name and roles.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setAskOpen(false)}
+                  aria-label="Close career guidance"
+                  className="text-alumdim transition-colors hover:text-phos"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <form onSubmit={askCareerQuestion} className="mt-5">
+                <label
+                  htmlFor="career-question"
+                  className="lbl text-alumdim"
+                >
+                  your career question
+                </label>
+                <textarea
+                  id="career-question"
+                  value={askQuestion}
+                  onChange={(event) => setAskQuestion(event.target.value)}
+                  maxLength={700}
+                  rows={3}
+                  placeholder="What should I learn first to move into a staff backend role?"
+                  className="mt-2 w-full resize-y border border-hair bg-recess px-3 py-3 text-[13px] leading-[1.6] text-cream outline-none placeholder:text-alumdim focus:border-phos"
+                  required
+                />
+                <div className="mt-1 flex justify-between font-mono text-[9px] text-alumdim">
+                  <span>
+                    Profile: {input.name || "unnamed"} · {input.targetRole}
+                  </span>
+                  <span>{askQuestion.length}/700</span>
+                </div>
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                  <span className="font-mono text-[9px] text-alumdim">
+                    Retrieval is keyword-based. Without an AI provider key,
+                    the app returns cited source excerpts instead of generated
+                    prose. If configured, the provider receives your question,
+                    profile context, and retrieved excerpts.
+                  </span>
+                  <button
+                    type="submit"
+                    disabled={askLoading || !askQuestion.trim()}
+                    className="flex items-center gap-2 bg-phos px-4 py-2.5 font-mono text-[10px] tracking-[0.16em] text-hull uppercase transition-colors hover:bg-phosbright disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <MessagesSquare size={13} />
+                    {askLoading ? "searching sources…" : "get grounded guidance"}
+                  </button>
+                </div>
+              </form>
+
+              {askError && (
+                <p
+                  role="alert"
+                  className="mt-4 border border-amber/50 bg-amberdim/40 px-3 py-2 font-mono text-[11px] text-amber"
+                >
+                  ! {askError}
+                </p>
+              )}
+
+              {guidanceAnswer && (
+                <div className="mt-6 border-t border-hair pt-5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="lbl text-phos">response</h3>
+                    <span className="font-mono text-[9px] tracking-[0.12em] text-alumdim uppercase">
+                      {guidanceAnswer.mode === "model-grounded"
+                        ? "model response · cited"
+                        : guidanceAnswer.mode === "no-evidence"
+                          ? "no supporting evidence"
+                          : "retrieved source excerpts"}
+                    </span>
+                  </div>
+                  <p className="mt-3 whitespace-pre-wrap text-[13px] leading-[1.75] text-alum">
+                    {guidanceAnswer.answer}
+                  </p>
+
+                  {guidanceAnswer.sources.length > 0 && (
+                    <section className="mt-5">
+                      <div className="lbl text-alumdim">
+                        supporting sources ·{" "}
+                        {guidanceAnswer.priorRunsSearched} matching saved runs
+                        searched
+                      </div>
+                      <div className="mt-2 space-y-2">
+                        {guidanceAnswer.sources.map((source) => (
+                          <article
+                            key={`${source.id}-${source.ref}-${source.savedAt ?? ""}`}
+                            className="recess border border-hair p-3"
+                          >
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                              <span className="font-mono text-[10px] text-phos">
+                                [{source.id}]
+                              </span>
+                              <span className="font-mono text-[10px] text-alum">
+                                {source.ref}
+                              </span>
+                              <span className="lbl text-alumdim">
+                                {source.source}
+                              </span>
+                              <span className="num ml-auto text-[9px] text-alumdim">
+                                similarity {source.score.toFixed(3)}
+                              </span>
+                            </div>
+                            <p className="mt-2 text-[12px] leading-[1.6] text-alumdim">
+                              {source.excerpt}
+                            </p>
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+                  )}
+                  <p className="mt-4 border border-amber/35 bg-amberdim/20 p-3 font-mono text-[10px] leading-[1.6] text-alumdim">
+                    This prototype can miss relevant passages or retrieve
+                    incomplete context. Verify recommendations against your
+                    actual experience; the result is not a validated career
+                    assessment.
+                  </p>
+                </div>
+              )}
+            </motion.section>
+          </>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {histOpen && (
           <>
             <motion.div
@@ -1091,7 +1535,7 @@ export default function Console({ history }: { history: HistItem[] }) {
               className="fixed inset-y-0 right-0 z-50 flex w-[min(420px,92vw)] flex-col border-l border-hair bg-rack"
             >
               <div className="flex items-center justify-between border-b border-hair px-4 py-3">
-                <span className="lbl text-alumdim">run history · postgres</span>
+                <span className="lbl text-alumdim">saved run history</span>
                 <button
                   onClick={() => setHistOpen(false)}
                   className="text-alumdim hover:text-phos"

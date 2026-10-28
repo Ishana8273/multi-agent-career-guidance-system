@@ -9,7 +9,11 @@ export async function GET(req: Request) {
   if (url.searchParams.get("refresh") === "1") invalidateFeed();
 
   const started = Date.now();
-  const feed = await fetchLiveJobs(q, Number(url.searchParams.get("limit")) || 6);
+  const requestedLimit = Number(url.searchParams.get("limit"));
+  const limit = Number.isFinite(requestedLimit)
+    ? Math.max(1, Math.min(20, Math.trunc(requestedLimit)))
+    : 6;
+  const feed = await fetchLiveJobs(q, limit);
 
   return NextResponse.json({
     query: q,

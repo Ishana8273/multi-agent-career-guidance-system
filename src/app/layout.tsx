@@ -3,9 +3,9 @@ import type { ReactNode } from "react";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "ORCHESTRA — Multi-Agent Career Guidance Console",
+  title: "ORCHESTRA — Multi-Agent Career Guidance System",
   description:
-    "Four specialised agents — resume, skills, job and interview — collaborate over shared blackboard memory and a RAG corpus to print one personalised career development plan.",
+    "An educational career decision-support prototype coordinating resume, skills, job, and interview agents over shared retrieved evidence to build a personalized career development plan.",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

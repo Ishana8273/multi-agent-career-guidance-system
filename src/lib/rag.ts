@@ -82,12 +82,163 @@ export const CORPUS: Doc[] = [
 
 /* ------------------------------ retrieval ------------------------------ */
 
+const STOP_WORDS = new Set([
+  "about",
+  "after",
+  "again",
+  "all",
+  "also",
+  "am",
+  "an",
+  "and",
+  "any",
+  "are",
+  "as",
+  "at",
+  "be",
+  "because",
+  "been",
+  "before",
+  "being",
+  "between",
+  "both",
+  "but",
+  "by",
+  "can",
+  "could",
+  "did",
+  "do",
+  "does",
+  "doing",
+  "down",
+  "during",
+  "each",
+  "few",
+  "for",
+  "first",
+  "from",
+  "further",
+  "had",
+  "has",
+  "have",
+  "having",
+  "he",
+  "her",
+  "here",
+  "hers",
+  "him",
+  "his",
+  "how",
+  "help",
+  "i",
+  "if",
+  "in",
+  "into",
+  "is",
+  "it",
+  "its",
+  "just",
+  "me",
+  "more",
+  "most",
+  "need",
+  "next",
+  "my",
+  "no",
+  "nor",
+  "not",
+  "now",
+  "of",
+  "off",
+  "on",
+  "once",
+  "only",
+  "or",
+  "other",
+  "our",
+  "ours",
+  "out",
+  "over",
+  "own",
+  "same",
+  "she",
+  "should",
+  "so",
+  "some",
+  "such",
+  "than",
+  "that",
+  "the",
+  "their",
+  "theirs",
+  "them",
+  "then",
+  "there",
+  "these",
+  "they",
+  "tell",
+  "this",
+  "those",
+  "through",
+  "to",
+  "too",
+  "under",
+  "until",
+  "up",
+  "very",
+  "was",
+  "we",
+  "were",
+  "what",
+  "when",
+  "where",
+  "which",
+  "while",
+  "who",
+  "whom",
+  "why",
+  "will",
+  "with",
+  "want",
+  "would",
+  "you",
+  "your",
+  "yours",
+]);
+
 const tokenize = (s: string) =>
   s
     .toLowerCase()
     .replace(/[^a-z0-9+#. ]/g, " ")
     .split(/\s+/)
-    .filter((t) => t.length > 2);
+    .filter((t) => t.length > 2 && !STOP_WORDS.has(t));
+
+export function cosineSimilarity(left: string, right: string): number {
+  const leftTerms = new Map<string, number>();
+  const rightTerms = new Map<string, number>();
+  for (const token of tokenize(left)) {
+    leftTerms.set(token, (leftTerms.get(token) ?? 0) + 1);
+  }
+  for (const token of tokenize(right)) {
+    rightTerms.set(token, (rightTerms.get(token) ?? 0) + 1);
+  }
+  if (!leftTerms.size || !rightTerms.size) return 0;
+
+  let dot = 0;
+  for (const [token, count] of leftTerms) {
+    dot += count * (rightTerms.get(token) ?? 0);
+  }
+  const leftNorm = Math.sqrt(
+    Array.from(leftTerms.values()).reduce((sum, count) => sum + count ** 2, 0),
+  );
+  const rightNorm = Math.sqrt(
+    Array.from(rightTerms.values()).reduce(
+      (sum, count) => sum + count ** 2,
+      0,
+    ),
+  );
+  return dot / (leftNorm * rightNorm);
+}
 
 const docTerms = CORPUS.map((d) => {
   const tf = new Map<string, number>();
@@ -118,14 +269,6 @@ export function retrieve(query: string, perKind: number, k: number): Chunk[] {
     .filter((s) => s.score > 0)
     .sort((a, b) => b.score - a.score);
 
-  // guarantee a minimum recall floor even on sparse queries
-  if (scored.length < k) {
-    for (const d of CORPUS) {
-      if (scored.length >= k) break;
-      if (!scored.some((s) => s.d.ref === d.ref)) scored.push({ d, score: 0.08 });
-    }
-  }
-
   const out: Chunk[] = [];
   const seen = new Set<string>();
   for (const kind of ["resume", "skills", "job", "interview"] as AgentId[]) {
@@ -139,7 +282,7 @@ export function retrieve(query: string, perKind: number, k: number): Chunk[] {
         collection: s.d.collection,
         kind,
         text: s.d.text,
-        score: Number(Math.min(0.99, s.score + 0.42).toFixed(3)),
+        score: Number(s.score.toFixed(3)),
         agent: kind,
       });
       n++;
@@ -147,4 +290,35 @@ export function retrieve(query: string, perKind: number, k: number): Chunk[] {
   }
   // interleave so the rail fills in agent order, capped at k
   return out.slice(0, k);
+}
+
+export function retrieveTop(query: string, k = 6): Chunk[] {
+  const qtf = new Map<string, number>();
+  for (const token of tokenize(query)) {
+    qtf.set(token, (qtf.get(token) ?? 0) + 1);
+  }
+  const qnorm = Math.sqrt(
+    Array.from(qtf.values()).reduce((sum, weight) => sum + weight * weight, 0) ||
+      1,
+  );
+
+  return CORPUS.map((doc, index) => {
+    const { tf, norm } = docTerms[index];
+    let dot = 0;
+    for (const [term, weight] of qtf) {
+      dot += weight * (tf.get(term) ?? 0);
+    }
+    return { doc, score: dot / (qnorm * norm) };
+  })
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(0, Math.min(12, Math.trunc(k))))
+    .map(({ doc, score }) => ({
+      ref: doc.ref,
+      collection: doc.collection,
+      kind: doc.kind,
+      text: doc.text,
+      score: Number(score.toFixed(3)),
+      agent: doc.kind,
+    }));
 }

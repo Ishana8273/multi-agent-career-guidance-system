@@ -1,5 +1,14 @@
 export type AgentId = "resume" | "skills" | "job" | "interview";
 
+export const CAREER_FOCUSES = [
+  "job switch",
+  "internal promotion",
+  "domain pivot",
+  "leadership track",
+  "interview rehabilitation",
+  "return after gap",
+] as const;
+
 export interface CandidateInput {
   name: string;
   currentRole: string;

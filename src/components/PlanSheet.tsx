@@ -15,6 +15,15 @@ const sevLabel: Record<string, string> = {
   watch: "WATCH",
 };
 
+function safeExternalUrl(value?: string): string | undefined {
+  try {
+    const url = new URL(value ?? "");
+    return url.protocol === "https:" ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function Rule({ label }: { label: string }) {
   return (
     <div className="mt-14 mb-7 flex items-baseline gap-4">
@@ -37,6 +46,11 @@ export default function PlanSheet({
   onClose: () => void;
   stamped: string;
 }) {
+  const jobs = plan.jobs.map((job) => ({
+    ...job,
+    safeUrl: safeExternalUrl(job.url),
+  }));
+
   return (
     <motion.div
       initial={{ y: "100%" }}
@@ -46,9 +60,7 @@ export default function PlanSheet({
       className="fixed inset-0 z-50 overflow-y-auto bg-[#F4F1E8] text-[#1A1D19]"
       style={{
         backgroundImage:
-          "linear-gradient(rgba(244,241,232,0.86), rgba(244,241,232,0.9)), url('/images/paper.jpg')",
-        backgroundSize: "cover",
-        backgroundPosition: "center",
+          "radial-gradient(ellipse at top right, rgba(30,91,56,.08), transparent 38%), linear-gradient(180deg, #f8f6ef, #ece9df)",
       }}
     >
       <div className="mx-auto w-full max-w-[1080px] px-6 pb-24 pt-14 sm:px-10">
@@ -97,7 +109,7 @@ export default function PlanSheet({
               {plan.verdict.score}
             </div>
             <div className="lbl mt-2 !text-[10px] !text-[#1A1D19]/55">
-              readiness / 100
+              heuristic indicator / 100 · not an assessment
             </div>
             <div
               className="mt-5 inline-block px-2 py-1 font-mono text-[10px] tracking-[0.18em]"
@@ -115,7 +127,11 @@ export default function PlanSheet({
         </div>
 
         {/* resume */}
-        <Rule label="02 · Resume agent — bullet rewrites" />
+        <Rule label="02 · Resume agent — editable bullet templates" />
+        <p className="mb-5 border border-[#B3690F]/40 bg-[#B3690F]/8 p-3 font-mono text-[11px] leading-[1.6] text-[#1A1D19]/70">
+          Templates contain placeholders, not claims about your experience.
+          Replace them only with outcomes and measurements you can verify.
+        </p>
         <div className="space-y-5">
           {plan.resume.map((r) => (
             <div
@@ -132,7 +148,7 @@ export default function PlanSheet({
               </div>
               <div>
                 <div className="lbl mb-2 !text-[10px] !text-[#1E5B38]">
-                  {r.id} · after
+                  {r.id} · editable template
                 </div>
                 <p className="text-[15px] leading-[1.55] text-[#1A1D19]">
                   {r.after}
@@ -147,6 +163,10 @@ export default function PlanSheet({
 
         {/* skills */}
         <Rule label="03 · Skills agent — gap analysis" />
+        <p className="mb-4 font-mono text-[11px] leading-[1.6] text-[#1A1D19]/60">
+          Proficiency values are rough rule-based estimates from the declared
+          stack and experience, not a tested competency assessment.
+        </p>
         <div className="space-y-4">
           {plan.skills.map((s) => (
             <div key={s.name}>
@@ -184,9 +204,14 @@ export default function PlanSheet({
         </div>
 
         {/* jobs */}
-        <Rule label="04 · Job agent — ranked targets" />
+        <Rule label="04 · Job agent — role examples and live postings" />
+        <p className="mb-4 font-mono text-[11px] leading-[1.6] text-[#1A1D19]/60">
+          Only rows marked LIVE come from public job feeds. Other rows are
+          illustrative role archetypes, not current openings. Match values are
+          heuristic comparisons, not hiring probabilities.
+        </p>
         <div className="border-t border-[#1A1D19]/25">
-          {plan.jobs.map((j) => (
+          {jobs.map((j) => (
             <div
               key={j.org + j.title}
               className="grid grid-cols-[1fr_auto] items-baseline gap-x-6 gap-y-1 border-b border-[#1A1D19]/25 py-3.5 sm:grid-cols-[1.6fr_auto_auto]"
@@ -207,11 +232,11 @@ export default function PlanSheet({
                 </div>
                 <div className="font-mono text-[11px] text-[#1A1D19]/60">
                   {j.org} · {j.band}
-                  {j.url ? (
+                  {j.safeUrl ? (
                     <>
                       {" · "}
                       <a
-                        href={j.url}
+                        href={j.safeUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="underline decoration-[#1E5B38]/50 underline-offset-2 hover:text-[#1E5B38]"
@@ -232,8 +257,8 @@ export default function PlanSheet({
                     style={{ width: `${j.fit}%` }}
                   />
                 </div>
-                <span className="num w-12 text-right text-[15px] font-500" style={{ fontWeight: 500 }}>
-                  {j.fit}%
+                <span className="num w-20 text-right text-[10px] font-500 uppercase" style={{ fontWeight: 500 }}>
+                  {j.fit}% heuristic
                 </span>
               </div>
             </div>
@@ -337,9 +362,10 @@ export default function PlanSheet({
 
         <div className="mt-16 border-t-2 border-[#1A1D19] pt-4">
           <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#1A1D19]/55">
-            Generated by the Orchestra council — resume · skills · job ·
-            interview — over shared blackboard memory and a 4-collection RAG
-            corpus.
+            Educational career decision-support prototype · resume · skills ·
+            job · interview · shared blackboard · four-collection retrieval.
+            Scores and recommendations are heuristic, indicative, and not
+            guarantees.
           </p>
         </div>
       </div>

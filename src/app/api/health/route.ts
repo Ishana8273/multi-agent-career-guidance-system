@@ -5,13 +5,16 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   if (!db) {
-    return Response.json({ ok: false, reason: "DATABASE_URL is not configured" }, { status: 503 });
+    return Response.json({ ok: true, storage: "local-file" });
   }
 
   try {
     await db.execute(sql`select 1`);
-    return Response.json({ ok: true });
+    return Response.json({ ok: true, storage: "postgres" });
   } catch {
-    return Response.json({ ok: false }, { status: 500 });
+    return Response.json(
+      { ok: false, storage: "postgres", reason: "database connection failed" },
+      { status: 503 },
+    );
   }
 }

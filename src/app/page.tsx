@@ -1,6 +1,7 @@
 import { desc } from "drizzle-orm";
 import { db } from "@/db";
 import { runs } from "@/db/schema";
+import { listLocalRuns } from "@/lib/run-store";
 import type { CandidateInput } from "@/lib/roles";
 import Console from "@/components/Console";
 
@@ -43,9 +44,20 @@ export default async function Home() {
           tier: plan?.verdict?.tier ?? "—",
         };
       });
-    } catch {
+    } catch (error) {
+      console.error("Could not load PostgreSQL run history", error);
       history = [];
     }
+  } else {
+    const rows = await listLocalRuns();
+    history = rows.slice(0, 24).map((run) => ({
+      id: run.id,
+      createdAt: new Date(run.createdAt),
+      targetRole: run.input.targetRole,
+      name: run.input.name,
+      score: run.plan.verdict.score,
+      tier: run.plan.verdict.tier,
+    }));
   }
 
   return <Console history={history} />;
