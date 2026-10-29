@@ -8,11 +8,13 @@ const sevColor: Record<string, string> = {
   critical: "#B4441F",
   elevated: "#B3690F",
   watch: "#1E5B38",
+  unassessed: "#6B7068",
 };
 const sevLabel: Record<string, string> = {
   critical: "CRITICAL",
   elevated: "ELEVATED",
   watch: "WATCH",
+  unassessed: "NOT ASSESSED",
 };
 
 function safeExternalUrl(value?: string): string | undefined {
@@ -164,8 +166,7 @@ export default function PlanSheet({
         {/* skills */}
         <Rule label="03 · Skills agent — gap analysis" />
         <p className="mb-4 font-mono text-[11px] leading-[1.6] text-[#1A1D19]/60">
-          Proficiency values are rough rule-based estimates from the declared
-          stack and experience, not a tested competency assessment.
+          Declared means the candidate listed the skill; it does not prove proficiency. Skills not listed are NOT ASSESSED. This prototype does not test competency, so the target values are learning priorities, not measured skill scores.
         </p>
         <div className="space-y-4">
           {plan.skills.map((s) => (
@@ -177,13 +178,14 @@ export default function PlanSheet({
                 <span className="flex items-center gap-3 font-mono text-[11px] text-[#1A1D19]/65">
                   <span className="uppercase tracking-[0.14em]">{s.area}</span>
                   <span
-                    className="px-1.5 py-0.5 text-[9px] tracking-[0.18em] text-[#F4F1E8]"
-                    style={{ background: sevColor[s.severity] }}
+                    className="px-1.5 py-0.5 text-[9px] tracking-[0.12em] text-[#F4F1E8]"
+                    style={{ background: sevColor.unassessed }}
+                    title="No practical skills test is performed by this prototype"
                   >
-                    {sevLabel[s.severity]}
+                    {s.evidence === "declared" ? "DECLARED · NOT TESTED" : "NOT ASSESSED"}
                   </span>
                   <span className="num">
-                    {s.have} → {s.need}
+                    {s.evidence === "declared" ? "Declared · not tested" : "No evidence"}
                   </span>
                 </span>
               </div>
@@ -191,13 +193,17 @@ export default function PlanSheet({
                 <div
                   className="h-full"
                   style={{
-                    width: `${s.have}%`,
+                    width: s.evidence === "declared" ? "35%" : "8%",
                     background: sevColor[s.severity],
                   }}
                 />
               </div>
               <p className="mt-1.5 font-mono text-[11px] text-[#1A1D19]/60">
-                action: {s.action}
+                {s.evidence === "not-declared"
+                  ? "evidence: not listed in candidate intake · proficiency unassessed. "
+                  : s.evidence === "declared"
+                    ? "evidence: candidate-declared only. "
+                    : "evidence status unavailable in this saved run. "}action: {s.action}
               </p>
             </div>
           ))}

@@ -133,8 +133,17 @@ export async function POST(req: Request) {
     );
   }
 
-  const searchQuery = question;
-  const corpusChunks = retrieveTop(searchQuery, 8);
+  // Include current profile context in retrieval so short questions such as
+  // "what should I study?" are grounded in the current target role and stack.
+  const searchQuery = [question, candidate.targetRole, candidate.stack, candidate.focus].join(" ");
+  const fresher = Number.parseInt(candidate.years, 10) <= 1;
+  const seniorEvidence = /\b(senior|staff|principal|lead|manager|director|head of|vice president|\bvp\b|\bcto\b)\b/i;
+  const corpusChunks = retrieveTop(searchQuery, 12).filter((chunk) => {
+    // Senior role exemplars are poor evidence for a fresher's routine guidance.
+    if (fresher && chunk.collection === "job-feed" && seniorEvidence.test(chunk.text)) return false;
+    if (fresher && chunk.collection === "resume-bank" && seniorEvidence.test(chunk.text)) return false;
+    return true;
+  }).slice(0, 8);
   let priorRuns: PreviousRun[];
 
   if (db) {
@@ -151,6 +160,9 @@ export async function POST(req: Request) {
           sql`lower(${runs.input} ->> 'name') = lower(${candidate.name})`,
           sql`lower(${runs.input} ->> 'currentRole') = lower(${candidate.currentRole})`,
           sql`lower(${runs.input} ->> 'targetRole') = lower(${candidate.targetRole})`,
+          sql`lower(coalesce(${runs.input} ->> 'years', '')) = lower(${candidate.years})`,
+          sql`lower(coalesce(${runs.input} ->> 'stack', '')) = lower(${candidate.stack})`,
+          sql`lower(coalesce(${runs.input} ->> 'focus', '')) = lower(${candidate.focus})`,
         ),
       )
       .orderBy(desc(runs.createdAt))
@@ -198,6 +210,8 @@ export async function POST(req: Request) {
         : String(run.createdAt);
     for (const chunk of run.chunks ?? []) {
       if (alreadyIncluded.has(chunk.ref) || !chunk.text) continue;
+      // Do not surface senior/staff/lead examples in a fresher's career Q&A.
+      if (fresher && seniorEvidence.test(chunk.text)) continue;
       alreadyIncluded.add(chunk.ref);
       candidates.push({
         ref: chunk.ref,
@@ -219,6 +233,8 @@ export async function POST(req: Request) {
     for (const fact of run.plan?.facts ?? []) {
       if (!fact.value) continue;
       const ref = `saved:${fact.label}`;
+      if (fresher && /^(prior:)?(seniority\.years|target\.role)$/i.test(fact.label) && /\b([5-9]|[1-9][0-9]+)\s*(years?|yrs?)\b/i.test(fact.value)) continue;
+      if (fresher && seniorEvidence.test(fact.value)) continue;
       candidates.push({
         ref,
         source: "this candidate's saved run",

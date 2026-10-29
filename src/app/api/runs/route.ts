@@ -1,3 +1,4 @@
+
 import { and, desc, eq, sql } from "drizzle-orm";
 import { NextResponse } from "next/server";
 import { db } from "@/db";
@@ -16,19 +17,24 @@ import { CAREER_FOCUSES } from "@/lib/roles";
 
 export const dynamic = "force-dynamic";
 
+/* GET — return the latest 24 runs */
 export async function GET() {
   if (!db) {
     const rows = await listLocalRuns();
-    return NextResponse.json({
-      runs: rows.slice(0, 24).map((run) => ({
-        id: run.id,
-        createdAt: run.createdAt,
-        targetRole: run.input.targetRole,
-        name: run.input.name,
-        score: run.plan.verdict.score,
-        tier: run.plan.verdict.tier,
-      })),
-    });
+
+    return NextResponse.json(
+      {
+        runs: rows.slice(0, 24).map((run) => ({
+          id: run.id,
+          createdAt: run.createdAt,
+          targetRole: run.input.targetRole,
+          name: run.input.name,
+          score: run.plan.verdict.score,
+          tier: run.plan.verdict.tier,
+        })),
+      },
+      { headers: { "Cache-Control": "no-store" } },
+    );
   }
 
   const rows = await db
@@ -39,62 +45,80 @@ export async function GET() {
       plan: runs.plan,
     })
     .from(runs)
-    .orderBy(runs.createdAt)
+    .orderBy(desc(runs.createdAt))
     .limit(24);
 
-  const shaped = rows
-    .map((r) => {
-      const i = r.input as unknown as CandidateInput;
-      const p = r.plan as unknown as {
-        verdict: { score: number; tier: string };
-      };
-      return {
-        id: r.id,
-        createdAt: r.createdAt,
-        targetRole: i?.targetRole ?? "—",
-        name: i?.name ?? "—",
-        score: p?.verdict?.score ?? 0,
-        tier: p?.verdict?.tier ?? "—",
-      };
-    })
-    .reverse();
+  const shaped = rows.map((r) => {
+    const input = r.input as unknown as CandidateInput;
+    const plan = r.plan as unknown as {
+      verdict: { score: number; tier: string };
+    };
 
-  return NextResponse.json({ runs: shaped });
+    return {
+      id: r.id,
+      createdAt: r.createdAt,
+      targetRole: input?.targetRole ?? "—",
+      name: input?.name ?? "—",
+      score: plan?.verdict?.score ?? 0,
+      tier: plan?.verdict?.tier ?? "—",
+    };
+  });
+
+  return NextResponse.json(
+    { runs: shaped },
+    { headers: { "Cache-Control": "no-store" } },
+  );
 }
 
-/* ------------------------------------------------------------------ *
- * POST — convenes the council as a server-sent event stream.
- *   engine   : which reasoner is configured (llm or local fallback)
- *   feed     : live public job APIs just fetched
- *   chunk    : a passage written to the shared blackboard
- *   step     : one agent action, emitted the moment it happens
- *   plan     : the committed career development plan
- *   error    : something failed
- * ------------------------------------------------------------------ */
+/* POST — run the career council and persist the result */
 export async function POST(req: Request) {
   const database = db;
   const contentLength = Number(req.headers.get("content-length"));
+
   if (Number.isFinite(contentLength) && contentLength > 16_384) {
-    return NextResponse.json({ error: "request body too large" }, { status: 413 });
+    return NextResponse.json(
+      { error: "request body too large" },
+      { status: 413 },
+    );
   }
 
   let body: Record<string, unknown>;
+
   try {
     const parsed: unknown = await req.json();
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return NextResponse.json({ error: "request must be a JSON object" }, { status: 400 });
+
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed)
+    ) {
+      return NextResponse.json(
+        { error: "request must be a JSON object" },
+        { status: 400 },
+      );
     }
+
     body = parsed as Record<string, unknown>;
   } catch {
-    return NextResponse.json({ error: "invalid json" }, { status: 400 });
+    return NextResponse.json(
+      { error: "invalid json" },
+      { status: 400 },
+    );
   }
 
-  const readText = (key: string, fallback: string, maxLength: number) => {
+  const readText = (
+    key: string,
+    fallback: string,
+    maxLength: number,
+  ) => {
     const value = body[key];
+
     if (value === undefined || value === null) return fallback;
     if (typeof value !== "string") return null;
+
     return value.trim().slice(0, maxLength);
   };
+
   const name = readText("name", "anonymous", 80);
   const currentRole = readText("currentRole", "Engineer", 90);
   const targetRole = readText("targetRole", "", 90);
@@ -102,6 +126,7 @@ export async function POST(req: Request) {
   const stack = readText("stack", "", 320);
   const focus = readText("focus", "internal promotion", 60);
   const notes = readText("notes", "", 600);
+
   if (
     name === null ||
     currentRole === null ||
@@ -116,20 +141,28 @@ export async function POST(req: Request) {
       { status: 400 },
     );
   }
+
   if (!targetRole || !stack) {
     return NextResponse.json(
       { error: "target role and stack are required" },
       { status: 400 },
     );
   }
+
   if (!/^\d{1,2}$/.test(years) || Number(years) > 60) {
     return NextResponse.json(
       { error: "years must be a whole number between 0 and 60" },
       { status: 400 },
     );
   }
-  if (!CAREER_FOCUSES.includes(focus as (typeof CAREER_FOCUSES)[number])) {
-    return NextResponse.json({ error: "unsupported career focus" }, { status: 400 });
+
+  if (!CAREER_FOCUSES.includes(
+    focus as (typeof CAREER_FOCUSES)[number],
+  )) {
+    return NextResponse.json(
+      { error: "unsupported career focus" },
+      { status: 400 },
+    );
   }
 
   const input: CandidateInput = {
@@ -149,24 +182,27 @@ export async function POST(req: Request) {
       const send = (event: string, data: unknown) => {
         try {
           controller.enqueue(
-            encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`),
+            encoder.encode(
+              `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+            ),
           );
         } catch {
-          /* client disconnected */
+          // Client disconnected.
         }
       };
 
       try {
         send("engine", ENGINE);
 
-        /* 1 — live public job feeds (real outbound HTTP, cached 5 minutes) */
+        // Fetch live job listings.
         const live = await fetchLiveJobs(
           `${input.targetRole} ${input.stack}`.trim(),
           6,
         );
 
-        /* 2 — reuse memory only for the same entered candidate profile */
+        // Retrieve memory for the same candidate profile.
         let episodic: MemoryFact[] = [];
+
         if (database) {
           const prior = await database
             .select({
@@ -182,6 +218,9 @@ export async function POST(req: Request) {
                 sql`lower(${runs.input} ->> 'targetRole') = lower(${input.targetRole})`,
                 sql`lower(${runs.input} ->> 'name') = lower(${input.name})`,
                 sql`lower(${runs.input} ->> 'currentRole') = lower(${input.currentRole})`,
+                sql`lower(coalesce(${runs.input} ->> 'years', '')) = lower(${input.years})`,
+                sql`lower(coalesce(${runs.input} ->> 'stack', '')) = lower(${input.stack})`,
+                sql`lower(coalesce(${runs.input} ->> 'focus', '')) = lower(${input.focus})`,
               ),
             )
             .orderBy(desc(memoryItems.id))
@@ -203,14 +242,21 @@ export async function POST(req: Request) {
             }));
         } else {
           const priorRuns = await listLocalRuns();
+
           episodic = priorRuns
             .filter(
               (run) =>
                 run.input.targetRole.toLowerCase() ===
                   input.targetRole.toLowerCase() &&
-                run.input.name.toLowerCase() === input.name.toLowerCase() &&
+                run.input.name.toLowerCase() ===
+                  input.name.toLowerCase() &&
                 run.input.currentRole.toLowerCase() ===
-                  input.currentRole.toLowerCase(),
+                  input.currentRole.toLowerCase() &&
+                run.input.years.trim() === input.years.trim() &&
+                run.input.stack.trim().toLowerCase() ===
+                  input.stack.trim().toLowerCase() &&
+                run.input.focus.trim().toLowerCase() ===
+                  input.focus.trim().toLowerCase(),
             )
             .flatMap((run) => run.plan.facts)
             .filter(
@@ -245,19 +291,20 @@ export async function POST(req: Request) {
           episodic,
           paceMs: ENGINE.kind === "llm" ? 40 : 300,
           persistenceLabel: database ? "postgres" : "local file",
-          emit: (s) => {
-            streamedSteps.push(s);
-            send("step", s);
+          emit: (step) => {
+            streamedSteps.push(step);
+            send("step", step);
           },
-          onChunk: (c) => {
-            streamedChunks.push(c);
-            send("chunk", c);
+          onChunk: (chunk) => {
+            streamedChunks.push(chunk);
+            send("chunk", chunk);
           },
         });
 
-        /* 3 — persist candidate, run and blackboard facts */
+        // Persist the candidate, run, and memory facts.
         let id: string;
         let createdAt: Date | string;
+
         if (database) {
           const row = await database.transaction(async (tx) => {
             const [candidate] = await tx
@@ -282,32 +329,45 @@ export async function POST(req: Request) {
                 chunks,
                 plan,
               })
-              .returning({ id: runs.id, createdAt: runs.createdAt });
+              .returning({
+                id: runs.id,
+                createdAt: runs.createdAt,
+              });
 
             const factsToStore = plan.facts.filter(
-              (f) => f.source !== "memory:prior",
+              (fact) => fact.source !== "memory:prior",
             );
+
             if (factsToStore.length) {
               await tx.insert(memoryItems).values(
-                factsToStore.map((f) => ({
+                factsToStore.map((fact) => ({
                   runId: savedRun.id,
-                  label: f.label,
-                  value: f.value,
-                  source: f.source,
-                  score: f.score.toFixed(3),
+                  label: fact.label,
+                  value: fact.value,
+                  source: fact.source,
+                  score: fact.score.toFixed(3),
                 })),
               );
             }
+
             return savedRun;
           });
+
           id = row.id;
           createdAt = row.createdAt;
         } else {
-          const row = await saveLocalRun({ input, trace, chunks, plan });
+          const row = await saveLocalRun({
+            input,
+            trace,
+            chunks,
+            plan,
+          });
+
           id = row.id;
           createdAt = row.createdAt;
         }
 
+        // Emit the completed plan only after persistence succeeds.
         send("plan", {
           id,
           createdAt,
@@ -316,13 +376,16 @@ export async function POST(req: Request) {
           chunks: streamedChunks.length ? streamedChunks : chunks,
           plan,
         });
-      } catch (e) {
-        send("error", { message: (e as Error).message || "council failed" });
+      } catch (error) {
+        send("error", {
+          message:
+            error instanceof Error ? error.message : "council failed",
+        });
       } finally {
         try {
           controller.close();
         } catch {
-          /* already closed */
+          // Stream already closed.
         }
       }
     },

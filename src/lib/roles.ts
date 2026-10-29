@@ -53,7 +53,8 @@ export interface Plan {
     area: string;
     have: number;
     need: number;
-    severity: "critical" | "elevated" | "watch";
+    severity: "critical" | "elevated" | "watch" | "unassessed";
+    evidence: "declared" | "not-declared";
     action: string;
   }[];
   jobs: {
